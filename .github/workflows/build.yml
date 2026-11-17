@@ -16,6 +16,12 @@ jobs:
           git apply --whitespace=nowarn helm-randomizer.patch
           git diff --stat
 
+      - name: Make the VST3 default to stereo output
+        shell: bash
+        run: |
+          sed -i 's/{0, 1}, {0, 2}/{0, 2}, {0, 1}/' JuceLibraryCode/AppConfig.h
+          grep -n "PreferredChannelConfigurations  " JuceLibraryCode/AppConfig.h
+
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
