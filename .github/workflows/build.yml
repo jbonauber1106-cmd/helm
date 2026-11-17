@@ -19,6 +19,20 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
+      - name: Build Helm engine library (Shared Code)
+        shell: pwsh
+        run: |
+          $sln = "$PWD\builds\vs17\"
+          msbuild builds\vs17\Helm_SharedCode.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:PlatformToolset=v143 `
+            /p:WindowsTargetPlatformVersion=10.0 `
+            /p:SolutionDir=$sln `
+            /m /nologo /v:m
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem -Recurse builds\vs17 -Filter *.lib | ForEach-Object { $_.FullName }
+
       - name: Build VST3 (64-bit, Release)
         shell: pwsh
         run: |
