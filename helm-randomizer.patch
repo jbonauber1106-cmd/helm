@@ -1,0 +1,282 @@
+diff --git a/src/common/synth_base.cpp b/src/common/synth_base.cpp
+index fc1bf28..18cac53 100644
+--- a/src/common/synth_base.cpp
++++ b/src/common/synth_base.cpp
+@@ -21,6 +21,9 @@
+ #include "synth_gui_interface.h"
+ #include "utils.h"
+ 
++#include <algorithm>
++#include <cmath>
++
+ #define OUTPUT_WINDOW_MIN_NOTE 16.0
+ 
+ SynthBase::SynthBase() {
+@@ -365,6 +368,141 @@ String SynthBase::getFolderName() {
+   return save_info_["folder_name"];
+ }
+ 
++namespace {
++  inline float randomRange(float low, float high) {
++    return low + (high - low) * Random::getSystemRandom().nextFloat();
++  }
++
++  inline bool randomChance(float probability) {
++    return Random::getSystemRandom().nextFloat() < probability;
++  }
++
++  template<size_t N>
++  inline float randomChoice(const float (&choices)[N]) {
++    return choices[Random::getSystemRandom().nextInt((int) N)];
++  }
++} // namespace
++
++void SynthBase::setRandomizedValue(const std::string& name, mopo::mopo_float value) {
++  // Never randomize the amp envelope: it defines the instrument type of the patch.
++  if (name.compare(0, 4, "amp_") == 0)
++    return;
++
++  if (!mopo::Parameters::isParameter(name) || controls_.count(name) == 0)
++    return;
++
++  const mopo::ValueDetails& details = mopo::Parameters::getDetails(name);
++  value = std::min(details.max, std::max(details.min, value));
++
++  // Snap stepped parameters (switches, waveforms, voice counts...) to valid values.
++  if (details.steps > 1) {
++    mopo::mopo_float interval = (details.max - details.min) / (details.steps - 1);
++    value = details.min + std::round((value - details.min) / interval) * interval;
++    value = std::min(details.max, std::max(details.min, value));
++  }
++
++  valueChangedExternal(name, value);
++  setValueNotifyHost(name, value);
++}
++
++void SynthBase::randomizeOscillators() {
++  static const float transposes[] = { 0, 0, 0, 0, 12, -12, 7, 5, 24, -24 };
++  static const float feedback_transposes[] = { 0, 0, 0, 12, -12, 7, -7, 5 };
++
++  for (int i = 1; i <= 2; ++i) {
++    std::string prefix = "osc_" + std::to_string(i) + "_";
++    setRandomizedValue(prefix + "waveform", std::floor(randomRange(0.0f, 11.0f)));
++    setRandomizedValue(prefix + "transpose", i == 1 ? 0.0f : randomChoice(transposes));
++    setRandomizedValue(prefix + "tune", randomChance(0.5f) ? 0.0f : randomRange(-0.25f, 0.25f));
++    setRandomizedValue(prefix + "volume", randomRange(0.35f, 0.8f));
++
++    float voices = randomChance(0.5f) ? 1.0f : randomRange(1.0f, 9.0f);
++    setRandomizedValue(prefix + "unison_voices", voices);
++    float detune_random = randomRange(0.0f, 1.0f);
++    setRandomizedValue(prefix + "unison_detune", 5.0f + 60.0f * detune_random * detune_random);
++    setRandomizedValue("unison_" + std::to_string(i) + "_harmonize", randomChance(0.2f) ? 1.0f : 0.0f);
++  }
++
++  setRandomizedValue("osc_mix", randomRange(0.15f, 0.85f));
++  setRandomizedValue("cross_modulation", randomChance(0.65f) ? 0.0f : randomRange(0.0f, 0.25f));
++
++  bool feedback = randomChance(0.3f);
++  setRandomizedValue("osc_feedback_amount", feedback ? randomRange(-0.4f, 0.4f) : 0.0f);
++  setRandomizedValue("osc_feedback_transpose", randomChoice(feedback_transposes));
++  setRandomizedValue("osc_feedback_tune", randomChance(0.6f) ? 0.0f : randomRange(-0.2f, 0.2f));
++
++  bool sub = randomChance(0.5f);
++  setRandomizedValue("sub_volume", sub ? randomRange(0.2f, 0.6f) : 0.0f);
++  setRandomizedValue("sub_waveform", std::floor(randomRange(0.0f, 11.0f)));
++  setRandomizedValue("sub_octave", randomChance(0.5f) ? 1.0f : 0.0f);
++  setRandomizedValue("sub_shuffle", randomChance(0.8f) ? 0.0f : randomRange(0.0f, 0.5f));
++
++  bool noise = randomChance(0.25f);
++  float noise_random = randomRange(0.0f, 1.0f);
++  setRandomizedValue("noise_volume", noise ? 0.3f * noise_random * noise_random : 0.0f);
++}
++
++void SynthBase::randomizeFilters() {
++  setRandomizedValue("filter_on", 1.0f);
++  setRandomizedValue("filter_style", std::floor(randomRange(0.0f, 3.0f)));
++  setRandomizedValue("filter_shelf", std::floor(randomRange(0.0f, 3.0f)));
++  setRandomizedValue("filter_blend", randomRange(0.0f, 2.0f));
++  setRandomizedValue("cutoff", randomRange(55.0f, 120.0f));
++  setRandomizedValue("resonance", randomRange(0.1f, 0.75f));
++  setRandomizedValue("filter_drive", randomRange(-3.0f, 8.0f));
++  setRandomizedValue("filter_saturation", randomRange(-10.0f, 20.0f));
++  setRandomizedValue("keytrack", randomChance(0.4f) ? 0.0f : randomRange(0.2f, 1.0f));
++
++  // Filter envelope (not the amp envelope).
++  float attack = randomRange(0.0f, 1.0f);
++  setRandomizedValue("fil_attack", randomChance(0.6f) ? 0.0f : 1.5f * attack * attack);
++  float decay = randomRange(0.0f, 1.0f);
++  setRandomizedValue("fil_decay", 0.05f + 2.0f * decay * decay);
++  setRandomizedValue("fil_sustain", randomRange(0.0f, 1.0f));
++  float release = randomRange(0.0f, 1.0f);
++  setRandomizedValue("fil_release", 0.05f + 2.0f * release * release);
++  setRandomizedValue("fil_env_depth", randomChance(0.2f) ? 0.0f : randomRange(-60.0f, 90.0f));
++
++  // Only move the formant filter if the patch is already using it.
++  if (controls_.count("formant_on") && controls_["formant_on"]->value() > 0.5) {
++    setRandomizedValue("formant_x", randomRange(0.0f, 1.0f));
++    setRandomizedValue("formant_y", randomRange(0.0f, 1.0f));
++  }
++}
++
++void SynthBase::randomizeEffects() {
++  // Delay. Respect the patch's sync mode: tempo-synced delays get a random tempo division,
++  // free-running delays get a random time.
++  setRandomizedValue("delay_on", randomChance(0.55f) ? 1.0f : 0.0f);
++  if (controls_["delay_sync"]->value() < 0.5)
++    setRandomizedValue("delay_frequency", randomRange(-0.5f, 3.5f));
++  else
++    setRandomizedValue("delay_tempo", std::floor(randomRange(4.0f, 11.0f)));
++  setRandomizedValue("delay_feedback", randomRange(-0.8f, 0.8f));
++  setRandomizedValue("delay_dry_wet", randomRange(0.1f, 0.5f));
++
++  // Reverb. Feedback is capped below 1.0 so the tail always decays.
++  setRandomizedValue("reverb_on", randomChance(0.55f) ? 1.0f : 0.0f);
++  setRandomizedValue("reverb_feedback", randomRange(0.8f, 0.96f));
++  setRandomizedValue("reverb_damping", randomRange(0.0f, 1.0f));
++  setRandomizedValue("reverb_dry_wet", randomRange(0.05f, 0.4f));
++
++  // Distortion.
++  setRandomizedValue("distortion_on", randomChance(0.35f) ? 1.0f : 0.0f);
++  setRandomizedValue("distortion_type", std::floor(randomRange(0.0f, 4.0f)));
++  setRandomizedValue("distortion_drive", randomRange(-10.0f, 15.0f));
++  setRandomizedValue("distortion_mix", randomRange(0.3f, 1.0f));
++}
++
++void SynthBase::randomize(RandomizeMode mode) {
++  if (mode == kRandomizeOsc || mode == kRandomizeAll)
++    randomizeOscillators();
++  if (mode == kRandomizeFilters || mode == kRandomizeAll)
++    randomizeFilters();
++  if (mode == kRandomizeEffects || mode == kRandomizeAll)
++    randomizeEffects();
++}
++
+ void SynthBase::ValueChangedCallback::messageCallback() {
+   if (listener) {
+     SynthGuiInterface* gui_interface = listener->getGuiInterface();
+diff --git a/src/common/synth_base.h b/src/common/synth_base.h
+index 66c233d..6146976 100644
+--- a/src/common/synth_base.h
++++ b/src/common/synth_base.h
+@@ -51,6 +51,17 @@ class SynthBase : public MidiManager::Listener {
+   
+     mopo::Output* getModSource(const std::string& name);
+ 
++    enum RandomizeMode {
++      kRandomizeOsc,
++      kRandomizeFilters,
++      kRandomizeEffects,
++      kRandomizeAll
++    };
++
++    // Randomizes groups of parameters. The amp envelope (amp_attack/decay/sustain/release)
++    // is never touched so the patch keeps its basic instrument type (pad, pluck, perc...).
++    void randomize(RandomizeMode mode);
++
+     void loadInitPatch();
+     bool loadFromFile(File patch);
+     bool exportToFile();
+@@ -96,6 +107,10 @@ class SynthBase : public MidiManager::Listener {
+     virtual SynthGuiInterface* getGuiInterface() = 0;
+     var saveToVar(String author);
+     void loadFromVar(var state);
++    void randomizeOscillators();
++    void randomizeFilters();
++    void randomizeEffects();
++    void setRandomizedValue(const std::string& name, mopo::mopo_float value);
+     mopo::ModulationConnection* getConnection(const std::string& source,
+                                               const std::string& destination);
+ 
+diff --git a/src/editor_components/patch_selector.cpp b/src/editor_components/patch_selector.cpp
+index d7f2bf9..5f3aff0 100644
+--- a/src/editor_components/patch_selector.cpp
++++ b/src/editor_components/patch_selector.cpp
+@@ -27,9 +27,36 @@
+ #define BROWSE_PERCENT 0.35f
+ 
+ namespace {
+-  static void initPatchCallback(int result, PatchSelector* patch_selector) {
+-    if (patch_selector != nullptr && result != 0)
+-      patch_selector->initPatch();
++  enum MenuIds {
++    kCancel = 0,
++    kInitPatch,
++    kRandomizeOsc,
++    kRandomizeFilters,
++    kRandomizeEffects,
++    kRandomizeAll
++  };
++
++  static void patchMenuCallback(int result, PatchSelector* patch_selector) {
++    if (patch_selector == nullptr || result == kCancel)
++      return;
++
++    switch (result) {
++      case kInitPatch:
++        patch_selector->initPatch();
++        break;
++      case kRandomizeOsc:
++        patch_selector->randomize(SynthBase::kRandomizeOsc);
++        break;
++      case kRandomizeFilters:
++        patch_selector->randomize(SynthBase::kRandomizeFilters);
++        break;
++      case kRandomizeEffects:
++        patch_selector->randomize(SynthBase::kRandomizeEffects);
++        break;
++      case kRandomizeAll:
++        patch_selector->randomize(SynthBase::kRandomizeAll);
++        break;
++    }
+   }
+ }
+ 
+@@ -133,9 +160,14 @@ void PatchSelector::mouseUp(const MouseEvent& event) {
+     PopupMenu m;
+     m.setLookAndFeel(DefaultLookAndFeel::instance());
+ 
+-    m.addItem(1, "Load Init Patch");
++    m.addItem(kInitPatch, "Load Init Patch");
++    m.addSeparator();
++    m.addItem(kRandomizeOsc, "Randomize OSC");
++    m.addItem(kRandomizeFilters, "Randomize Filters");
++    m.addItem(kRandomizeEffects, "Randomize Effects");
++    m.addItem(kRandomizeAll, "Randomize All");
+     m.showMenuAsync(PopupMenu::Options(),
+-                    ModalCallbackFunction::forComponent(initPatchCallback, this));
++                    ModalCallbackFunction::forComponent(patchMenuCallback, this));
+   }
+   else if (browser_)
+     browser_->setVisible(!browser_->isVisible());
+@@ -192,3 +224,11 @@ void PatchSelector::initPatch() {
+   parent->updateFullGui();
+   parent->notifyFresh();
+ }
++
++void PatchSelector::randomize(SynthBase::RandomizeMode mode) {
++  SynthGuiInterface* parent = findParentComponentOfClass<SynthGuiInterface>();
++  if (parent == nullptr)
++    return;
++
++  parent->getSynth()->randomize(mode);
++}
+diff --git a/src/editor_components/patch_selector.h b/src/editor_components/patch_selector.h
+index 7405d3b..e47f7e0 100644
+--- a/src/editor_components/patch_selector.h
++++ b/src/editor_components/patch_selector.h
+@@ -20,6 +20,7 @@
+ 
+ #include "JuceHeader.h"
+ #include "patch_browser.h"
++#include "synth_base.h"
+ #include "synth_section.h"
+ 
+ class PatchSelector : public SynthSection, public PatchBrowser::PatchSelectedListener {
+@@ -42,6 +43,7 @@ class PatchSelector : public SynthSection, public PatchBrowser::PatchSelectedLis
+     int getBrowseHeight();
+ 
+     void initPatch();
++    void randomize(SynthBase::RandomizeMode mode);
+ 
+   private:
+     void loadFromFile(File& patch);
