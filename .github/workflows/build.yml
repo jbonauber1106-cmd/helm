@@ -6,14 +6,20 @@ on:
 jobs:
   build:
     runs-on: windows-2022
+    env:
+      # Corner roundness in pixels for buttons/selectors (containers use double). 0 = square corners.
+      UI_RADIUS: "3.0"
     steps:
       - name: Get the code
         uses: actions/checkout@v4
 
-      - name: Apply the randomizer patch
+      - name: Apply the patches
         shell: bash
         run: |
           git apply --whitespace=nowarn helm-randomizer.patch
+          git apply --whitespace=nowarn helm-ui-rounded.patch
+          sed -i "s/#define HELM_UI_RADIUS .*/#define HELM_UI_RADIUS ((float)${UI_RADIUS})/" src/look_and_feel/ui_style.h
+          grep -n "HELM_UI_RADIUS" src/look_and_feel/ui_style.h
           git diff --stat
 
       - name: Make the VST3 default to stereo output
