@@ -9,6 +9,8 @@ jobs:
     env:
       # Corner roundness in pixels for buttons/selectors (containers use double). 0 = square corners.
       UI_RADIUS: "3.0"
+      # Maximum animation frames per second. Lower = less CPU use, choppier animation. 0 = unlimited.
+      MAX_FPS: "30"
     steps:
       - name: Get the code
         uses: actions/checkout@v4
@@ -19,7 +21,8 @@ jobs:
           git apply --whitespace=nowarn helm-randomizer.patch
           git apply --whitespace=nowarn helm-ui-rounded.patch
           sed -i "s/#define HELM_UI_RADIUS .*/#define HELM_UI_RADIUS ((float)${UI_RADIUS})/" src/look_and_feel/ui_style.h
-          grep -n "HELM_UI_RADIUS" src/look_and_feel/ui_style.h
+          sed -i "s/#define HELM_MAX_FPS .*/#define HELM_MAX_FPS ((float)${MAX_FPS})/" src/look_and_feel/ui_style.h
+          grep -n "HELM_UI_RADIUS\|HELM_MAX_FPS" src/look_and_feel/ui_style.h
           git diff --stat
 
       - name: Make the VST3 default to stereo output
