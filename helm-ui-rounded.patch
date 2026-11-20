@@ -25,7 +25,7 @@ index 057a78b..0c23272 100644
    g.setColour(selected == 0 ? Colour(0xffffffff) : Colour(0xffaaaaaa));
    g.strokePath(low_shelf_, stroke);
 diff --git a/src/editor_components/patch_selector.cpp b/src/editor_components/patch_selector.cpp
-index 5f3aff0..ccec7e3 100644
+index 5f3aff0..c665038 100644
 --- a/src/editor_components/patch_selector.cpp
 +++ b/src/editor_components/patch_selector.cpp
 @@ -22,6 +22,7 @@
@@ -36,7 +36,21 @@ index 5f3aff0..ccec7e3 100644
  
  #define TEXT_PADDING 4.0f
  #define BROWSE_PERCENT 0.35f
-@@ -126,11 +127,18 @@ void PatchSelector::paint(Graphics& g) {
+@@ -87,6 +88,13 @@ PatchSelector::PatchSelector() : SynthSection("patch_selector"),
+   browse_->setButtonText(TRANS("BROWSE"));
+   browse_->setColour(TextButton::buttonColourId, Colour(0xff303030));
+   browse_->setColour(TextButton::textColourOffId, Colours::white);
++
++  // The five buttons form one box with the name area; only its outer corners are rounded.
++  prev_patch_->setConnectedEdges(Button::ConnectedOnRight | Button::ConnectedOnBottom);
++  next_patch_->setConnectedEdges(Button::ConnectedOnLeft | Button::ConnectedOnBottom);
++  save_->setConnectedEdges(Button::ConnectedOnTop | Button::ConnectedOnRight);
++  export_->setConnectedEdges(Button::ConnectedOnTop | Button::ConnectedOnLeft | Button::ConnectedOnRight);
++  browse_->setConnectedEdges(Button::ConnectedOnTop | Button::ConnectedOnLeft);
+ }
+ 
+ PatchSelector::~PatchSelector() {
+@@ -126,11 +134,18 @@ void PatchSelector::paint(Graphics& g) {
  void PatchSelector::paintBackground(Graphics& g) {
    static const DropShadow shadow(Colour(0xff000000), 4, Point<int>(0, 0));
  
@@ -142,8 +156,238 @@ index d630a16..1af3b6a 100644
  
    /*
     g.setColour(selected == 0 ? Colour(0xffffffff) : Colour(0xffaaaaaa));
+diff --git a/src/editor_sections/full_interface.cpp b/src/editor_sections/full_interface.cpp
+index 206f81e..8814df1 100644
+--- a/src/editor_sections/full_interface.cpp
++++ b/src/editor_sections/full_interface.cpp
+@@ -35,6 +35,7 @@ FullInterface::FullInterface(mopo::control_map controls, mopo::output_map modula
+                              mopo::output_map poly_modulations,
+                              MidiKeyboardState* keyboard_state) : SynthSection("full_interface") {
+   animate_ = true;
++  last_frame_ms_ = 0.0;
+   open_gl_context.setContinuousRepainting(true);
+   open_gl_context.setRenderer(this);
+   open_gl_context.attachTo(*getTopLevelComponent());
+@@ -98,6 +99,12 @@ FullInterface::FullInterface(mopo::control_map controls, mopo::output_map modula
+ 
+   synthesis_interface_->toFront(true);
+   modulation_manager_->toFront(false);
++
++  // Above all the sections (so it can trim their corners) but below the pop-up dialogs.
++  corner_overlay_ = new RoundedCornerOverlay(this, &background_image_);
++  addAndMakeVisible(corner_overlay_);
++  corner_overlay_->toFront(false);
++
+   patch_browser_->toFront(false);
+   about_section_->toFront(false);
+   if (contribute_section_)
+@@ -136,9 +143,11 @@ void FullInterface::paintBackground(Graphics& g) {
+   g.setColour(Colors::background);
+   g.fillRect(getLocalBounds());
+ 
+-  shadow.drawForRectangle(g, arp_section_->getBounds());
+-  shadow.drawForRectangle(g, oscilloscope_->getBounds());
+-  shadow.drawForRectangle(g, patch_selector_->getBounds());
++  float box_radius = size_ratio_ * HELM_UI_RADIUS;
++  float bar_radius = helmCorner(patch_selector_->getHeight());
++  drawRoundedShadow(g, shadow, arp_section_->getBounds(), arp_section_->getContainerRadius());
++  drawRoundedShadow(g, shadow, oscilloscope_->getBounds(), box_radius);
++  drawRoundedShadow(g, shadow, patch_selector_->getBounds(), bar_radius);
+ 
+   int logo_padding = 2 * size_ratio_;
+   int x = logo_button_->getX() - logo_padding;
+@@ -156,8 +165,9 @@ void FullInterface::paintBackground(Graphics& g) {
+   logo_shadow.drawForImage(g, helm_small);
+   g.restoreState();
+ 
+-  component_shadow.drawForRectangle(g, patch_selector_->getBounds());
+-  component_shadow.drawForRectangle(g, volume_section_->getBounds());
++  drawRoundedShadow(g, component_shadow, patch_selector_->getBounds(), bar_radius);
++  drawRoundedShadow(g, component_shadow, volume_section_->getBounds(),
++                    volume_section_->getContainerRadius());
+ 
+   paintKnobShadows(g);
+   paintChildrenBackgrounds(g);
+@@ -246,6 +256,10 @@ void FullInterface::resized() {
+   modulation_manager_->setBounds(getBounds());
+ 
+   checkBackground();
++  if (corner_overlay_ != nullptr) {
++    corner_overlay_->setBounds(getLocalBounds());
++    corner_overlay_->repaint();
++  }
+ }
+ 
+ void FullInterface::setOutputMemory(const float* output_memory) {
+@@ -312,6 +326,15 @@ void FullInterface::newOpenGLContextCreated() {
+ }
+ 
+ void FullInterface::renderOpenGL() {
++  // Cap the animation frame rate to save CPU/GPU (this runs on the OpenGL thread, not the UI).
++  if (HELM_MAX_FPS > 0.0f) {
++    double min_interval = 1000.0 / HELM_MAX_FPS;
++    double elapsed = Time::getMillisecondCounterHiRes() - last_frame_ms_;
++    if (elapsed < min_interval)
++      Thread::sleep(int(min_interval - elapsed));
++  }
++  last_frame_ms_ = Time::getMillisecondCounterHiRes();
++
+   background_.render(open_gl_context);
+   renderOpenGLComponents(open_gl_context, animate_);
+ }
+diff --git a/src/editor_sections/full_interface.h b/src/editor_sections/full_interface.h
+index 5574db4..9d9a0dc 100644
+--- a/src/editor_sections/full_interface.h
++++ b/src/editor_sections/full_interface.h
+@@ -33,6 +33,7 @@
+ #include "overlay.h"
+ #include "patch_browser.h"
+ #include "patch_selector.h"
++#include "rounded_overlay.h"
+ #include "synthesis_interface.h"
+ #include "synth_section.h"
+ #include "update_check_section.h"
+@@ -90,8 +91,10 @@ class FullInterface : public SynthSection, public OpenGLRenderer {
+     ScopedPointer<SaveSection> save_section_;
+     ScopedPointer<DeleteSection> delete_section_;
+     ScopedPointer<VolumeSection> volume_section_;
++    ScopedPointer<RoundedCornerOverlay> corner_overlay_;
+ 
+     bool animate_;
++    double last_frame_ms_;
+     OpenGLContext open_gl_context;
+     Image background_image_;
+     OpenGLBackground background_;
+diff --git a/src/editor_sections/rounded_overlay.h b/src/editor_sections/rounded_overlay.h
+new file mode 100644
+index 0000000..9047cbd
+--- /dev/null
++++ b/src/editor_sections/rounded_overlay.h
+@@ -0,0 +1,122 @@
++/* Rounds the corners of boxes that are drawn square (OpenGL displays, the keyboard) and trims
++ * anything that pokes outside a rounded section container.
++ *
++ * How it works: Helm draws all static panels into one background image, draws the animated
++ * displays on top of it with OpenGL, and paints ordinary components after that. This overlay is
++ * an ordinary component placed above the sections. For every box it finds, it re-draws the
++ * original background image, clipped to the four tiny corner shapes outside the rounded outline.
++ * That erases the square corners without touching any shaders, and it is only repainted when the
++ * window changes, so it costs nothing per frame.
++ */
++#pragma once
++#ifndef ROUNDED_OVERLAY_H
++#define ROUNDED_OVERLAY_H
++
++#include "JuceHeader.h"
++
++// These must come first: several of the display headers rely on them being declared already.
++#include "synth_slider.h"
++#include "synth_section.h"
++#include "ui_style.h"
++
++#include "filter_response.h"
++#include "graphical_envelope.h"
++#include "graphical_step_sequencer.h"
++#include "midi_keyboard.h"
++#include "open_gl_envelope.h"
++#include "open_gl_oscilloscope.h"
++#include "open_gl_wave_viewer.h"
++#include "oscilloscope.h"
++#include "wave_viewer.h"
++#include "xy_pad.h"
++
++class RoundedCornerOverlay : public Component {
++  public:
++    RoundedCornerOverlay(SynthSection* root, const Image* background) :
++        root_(root), background_(background) {
++      setInterceptsMouseClicks(false, false);
++      setOpaque(false);
++    }
++
++    void paint(Graphics& g) override {
++      if (background_ == nullptr || background_->isNull())
++        return;
++
++      Path corners;
++      collectCorners(root_, corners);
++      if (corners.isEmpty())
++        return;
++
++      g.saveState();
++      g.reduceClipRegion(corners, AffineTransform());
++      g.drawImage(*background_, 0, 0, getWidth(), getHeight(),
++                  0, 0, background_->getWidth(), background_->getHeight());
++      g.restoreState();
++    }
++
++  private:
++    // Radius to use for this component, or 0 if it is not a box we round.
++    float radiusFor(Component* c) const {
++      if (SynthSection* section = dynamic_cast<SynthSection*>(c))
++        return section->drawsContainer() ? section->getContainerRadius() : 0.0f;
++
++      float box_radius = root_->getContainerRadius() * 0.5f;
++      if (dynamic_cast<OpenGLWaveViewer*>(c) || dynamic_cast<OpenGLEnvelope*>(c) ||
++          dynamic_cast<OpenGLOscilloscope*>(c) || dynamic_cast<FilterResponse*>(c) ||
++          dynamic_cast<XYPad*>(c) ||
++          dynamic_cast<GraphicalStepSequencer*>(c) || dynamic_cast<GraphicalEnvelope*>(c) ||
++          dynamic_cast<WaveViewer*>(c) || dynamic_cast<Oscilloscope*>(c) ||
++          dynamic_cast<MidiKeyboard*>(c)) {
++        return box_radius;
++      }
++      return 0.0f;
++    }
++
++    void collectCorners(Component* parent, Path& corners) const {
++      for (int i = 0; i < parent->getNumChildComponents(); ++i) {
++        Component* child = parent->getChildComponent(i);
++        if (child == this || !child->isVisible())
++          continue;
++
++        float radius = radiusFor(child);
++        if (radius > 0.0f)
++          addCorners(corners, getLocalArea(child, child->getLocalBounds()).toFloat(), radius);
++        collectCorners(child, corners);
++      }
++    }
++
++    static void addCorners(Path& path, Rectangle<float> r, float radius) {
++      radius = jmin(radius, r.getWidth() * 0.5f, r.getHeight() * 0.5f);
++      if (radius < 0.5f)
++        return;
++
++      addCorner(path, r.getX(), r.getY(), 1.0f, 1.0f, radius);
++      addCorner(path, r.getRight(), r.getY(), -1.0f, 1.0f, radius);
++      addCorner(path, r.getX(), r.getBottom(), 1.0f, -1.0f, radius);
++      addCorner(path, r.getRight(), r.getBottom(), -1.0f, -1.0f, radius);
++    }
++
++    // The sliver between a square corner (cx, cy) and a quarter circle of the given radius.
++    // dx and dy point from the corner into the box.
++    static void addCorner(Path& path, float cx, float cy, float dx, float dy, float radius) {
++      float c = radius * (1.0f - 0.5523f);
++      path.startNewSubPath(cx, cy);
++      path.lineTo(cx + dx * radius, cy);
++      path.cubicTo(cx + dx * c, cy, cx, cy + dy * c, cx, cy + dy * radius);
++      path.closeSubPath();
++    }
++
++    SynthSection* root_;
++    const Image* background_;
++};
++
++// Drop shadow that follows a rounded outline instead of a square one.
++inline void drawRoundedShadow(Graphics& g, const DropShadow& shadow, Rectangle<int> bounds,
++                              float radius) {
++  Path outline;
++  outline.addRoundedRectangle(float(bounds.getX()), float(bounds.getY()),
++                              float(bounds.getWidth()), float(bounds.getHeight()), radius);
++  shadow.drawForPath(g, outline);
++}
++
++#endif // ROUNDED_OVERLAY_H
 diff --git a/src/editor_sections/synth_section.cpp b/src/editor_sections/synth_section.cpp
-index c8d4f79..24bd495 100644
+index c8d4f79..1fc1da0 100644
 --- a/src/editor_sections/synth_section.cpp
 +++ b/src/editor_sections/synth_section.cpp
 @@ -21,6 +21,7 @@
@@ -167,15 +411,98 @@ index c8d4f79..24bd495 100644
  
    // Draw text title.
    g.setColour(Colors::tab_heading_text);
-@@ -63,7 +68,7 @@ void SynthSection::paintBackground(Graphics& g) {
+@@ -62,8 +67,9 @@ void SynthSection::paintBackground(Graphics& g) {
+ }
  
  void SynthSection::paintContainer(Graphics& g) {
++  container_painted_ = true;
    g.setColour(Colour(0xff303030));
 -  g.fillRoundedRectangle(0, 0, getWidth(), getHeight(), size_ratio_ * 3.0f);
-+  g.fillRoundedRectangle(0, 0, getWidth(), getHeight(), size_ratio_ * HELM_UI_RADIUS * 2.0f);
++  g.fillRoundedRectangle(0, 0, getWidth(), getHeight(), getContainerRadius());
  }
  
  void SynthSection::setSizeRatio(float ratio) {
+diff --git a/src/editor_sections/synth_section.h b/src/editor_sections/synth_section.h
+index 5b52ebe..4142806 100644
+--- a/src/editor_sections/synth_section.h
++++ b/src/editor_sections/synth_section.h
+@@ -22,6 +22,7 @@
+ #include "modulation_button.h"
+ #include "helm_common.h"
+ #include "synth_button.h"
++#include "ui_style.h"
+ #include <map>
+ 
+ class OpenGLComponent;
+@@ -30,7 +31,8 @@ class SynthSlider;
+ class SynthSection : public Component, public Slider::Listener,
+                      public Button::Listener, public SynthButton::ButtonListener {
+   public:
+-    SynthSection(String name) : Component(name), activator_(nullptr), size_ratio_(1.0f) { }
++    SynthSection(String name) : Component(name), activator_(nullptr), size_ratio_(1.0f),
++                                container_painted_(false) { }
+ 
+     // Drawing.
+     virtual void reset();
+@@ -38,6 +40,8 @@ class SynthSection : public Component, public Slider::Listener,
+     virtual void paint(Graphics& g) override;
+     virtual void paintBackground(Graphics& g);
+     virtual void paintContainer(Graphics& g);
++    bool drawsContainer() const { return container_painted_; }
++    float getContainerRadius() const { return size_ratio_ * HELM_UI_RADIUS * 2.0f; }
+     virtual void setSizeRatio(float ratio);
+     void paintKnobShadows(Graphics& g);
+     void drawTextForComponent(Graphics& g, String text, Component* component, int space = 4);
+@@ -92,6 +96,7 @@ class SynthSection : public Component, public Slider::Listener,
+ 
+     Image background_;
+     float size_ratio_;
++    bool container_painted_;
+ 
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthSection)
+ };
+diff --git a/src/look_and_feel/browser_look_and_feel.cpp b/src/look_and_feel/browser_look_and_feel.cpp
+index 754bf12..31d670e 100644
+--- a/src/look_and_feel/browser_look_and_feel.cpp
++++ b/src/look_and_feel/browser_look_and_feel.cpp
+@@ -16,17 +16,32 @@
+ 
+ #include "browser_look_and_feel.h"
+ #include "fonts.h"
++#include "ui_style.h"
+ 
+ void BrowserLookAndFeel::drawButtonBackground(Graphics& g, Button& button,
+                                               const Colour &background_colour,
+                                               bool hover, bool is_down) {
++  // Only corners that are not joined to a neighbouring button get rounded (see setConnectedEdges).
++  int edges = button.getConnectedEdgeFlags();
++  bool left = (edges & Button::ConnectedOnLeft) != 0, right = (edges & Button::ConnectedOnRight) != 0;
++  bool top = (edges & Button::ConnectedOnTop) != 0, bottom = (edges & Button::ConnectedOnBottom) != 0;
++  float radius = std::min(HELM_UI_RADIUS, std::min(button.getWidth(), button.getHeight()) / 3.0f);
++
++  Path shape;
++  shape.addRoundedRectangle(0.0f, 0.0f, button.getWidth(), button.getHeight(), radius, radius,
++                            !(left || top), !(right || top), !(left || bottom), !(right || bottom));
++
+   g.setColour(button.findColour(TextButton::buttonColourId));
+-  g.fillAll();
++  g.fillPath(shape);
+ 
+-  if (is_down)
+-    g.fillAll(Colour(0x11000000));
+-  else if (hover)
+-    g.fillAll(Colour(0x11ffffff));
++  if (is_down) {
++    g.setColour(Colour(0x11000000));
++    g.fillPath(shape);
++  }
++  else if (hover) {
++    g.setColour(Colour(0x11ffffff));
++    g.fillPath(shape);
++  }
+ }
+ 
+ void BrowserLookAndFeel::drawToggleButton(Graphics& g, ToggleButton& button,
 diff --git a/src/look_and_feel/default_look_and_feel.cpp b/src/look_and_feel/default_look_and_feel.cpp
 index 4005c99..f36eabf 100644
 --- a/src/look_and_feel/default_look_and_feel.cpp
@@ -223,10 +550,10 @@ index 4005c99..f36eabf 100644
  void DefaultLookAndFeel::drawButtonText(Graphics& g, TextButton& button,
 diff --git a/src/look_and_feel/ui_style.h b/src/look_and_feel/ui_style.h
 new file mode 100644
-index 0000000..e819bd5
+index 0000000..dec9b68
 --- /dev/null
 +++ b/src/look_and_feel/ui_style.h
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,21 @@
 +/* Shared UI style constants for the rounded-corner look. */
 +#pragma once
 +#ifndef UI_STYLE_H
@@ -237,6 +564,10 @@ index 0000000..e819bd5
 +// Corner radius in pixels (at 100% size) for small controls: buttons, selectors, the patch bar.
 +// Section containers use twice this. The build script can override this number.
 +#define HELM_UI_RADIUS 3.0f
++
++// Maximum animation frame rate (frames per second). Lower = less CPU/GPU use, choppier animation.
++// 0 means unlimited (the monitor's refresh rate). The build script can override this number.
++#define HELM_MAX_FPS 30.0f
 +
 +// Radius for a control of the given height; never more than a third of the height.
 +inline float helmCorner(float height) {
